@@ -8,8 +8,8 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-// GenerateKeypair, X25519 için public+private key üretir
-func GenerateKeypair() (public, private []byte, err error) {
+// GenerateKeyPair, X25519 için public+private key üretir
+func GenerateKeyPair() (public, private []byte, err error) {
 	private = make([]byte, curve25519.ScalarSize)
 	if _, err = rand.Read(private); err != nil {
 		return nil, nil, fmt.Errorf("private key gen: %w", err)
@@ -21,9 +21,9 @@ func GenerateKeypair() (public, private []byte, err error) {
 	return public, private, nil
 }
 
-// ComputeSharedSecret, kendi private ile karşıdakinin public’ini alıp paylaşılan secret çıkarır
-func ComputeSharedSecret(myPrivate, theirPublic []byte) ([]byte, error) {
-	shared, err := curve25519.X25519(myPrivate, theirPublic)
+// DeriveSharedKey, kendi private ile karşıdakinin public'ini alıp paylaşılan secret çıkarır
+func DeriveSharedKey(ourPriv, theirPub []byte) ([]byte, error) {
+	shared, err := curve25519.X25519(ourPriv, theirPub)
 	if err != nil {
 		return nil, fmt.Errorf("shared secret gen: %w", err)
 	}

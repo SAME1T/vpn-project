@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/SAME1T/vpn-project/pkg/crypto"
 	"github.com/SAME1T/vpn-project/pkg/protocol"
-	"github.com/songgao/water"
 )
 
 // Thread-safe shared key yönetimi
@@ -34,16 +34,21 @@ func (s *SharedKeyManager) Get() []byte {
 }
 
 func main() {
-	// TUN arayüzü oluştur
-	config := water.Config{
-		DeviceType: water.TAP,
-	}
-	tunIface, err := water.New(config)
+	// Manuel TAP interface açma (Windows)
+	fmt.Println("Manuel TAP interface kullanımı...")
+
+	// TAP device'ı manuel olarak aç (Windows specific)
+	tapFile, err := os.OpenFile(`\\.\Global\OpenVPN TAP-Windows6`,
+		os.O_RDWR, 0)
 	if err != nil {
-		log.Fatalf("TUN interface creation failed: %v", err)
+		log.Printf("TAP device açma hatası: %v", err)
+		log.Println("TUN olmadan devam ediliyor...")
+		runWithoutTAP()
+		return
 	}
-	defer tunIface.Close()
-	fmt.Printf("TUN arayüzü oluşturuldu: %s\n", tunIface.Name())
+	defer tapFile.Close()
+
+	fmt.Println("TAP device başarıyla açıldı!")
 
 	addr, err := net.ResolveUDPAddr("udp", ":51820")
 	if err != nil {
@@ -102,16 +107,15 @@ func main() {
 				handshakeCompleted = true
 				fmt.Println("Handshake tamamlandı, şifreli iletişim başlıyor")
 
-				// TUN ve UDP arasında veri akışını başlat
-				go tunToUDP(tunIface, conn, clientAddr, &keyManager)
-				go udpToTUN(conn, tunIface, clientAddr, &keyManager)
+				// TAP ve UDP arasında veri akışını başlat
+				go tapToUDP(tapFile, conn, clientAddr, &keyManager)
+				go udpToTAP(conn, tapFile, clientAddr, &keyManager)
 				go keepalive(conn, clientAddr, &keyManager)
-				go keyRotation(conn, clientAddr, ourPriv, clientPub, &keyManager)
 				continue
 			}
 		}
 
-		// Şifreli veri iletişimi
+		// Şifreli veri iletişimi (normal ping-pong)
 		if handshakeCompleted && addr.String() == clientAddr.String() {
 			// Protocol paketi parse et
 			pkt, err := protocol.Unmarshal(buf[:n])
@@ -159,22 +163,27 @@ func main() {
 	}
 }
 
-// TUN'dan UDP'ye veri akışı
-func tunToUDP(tunIface *water.Interface, conn *net.UDPConn, clientAddr *net.UDPAddr, keyManager *SharedKeyManager) {
+func runWithoutTAP() {
+	// TUN olmadan basit test
+	fmt.Println("TUN olmadan basit VPN testi...")
+	// cmd/server-simple/main.go kodunu buraya kopyala
+}
+
+func tapToUDP(tapFile *os.File, conn *net.UDPConn, clientAddr *net.UDPAddr, keyManager *SharedKeyManager) {
 	buf := make([]byte, 1500)
 	for {
-		n, err := tunIface.Read(buf)
+		n, err := tapFile.Read(buf)
 		if err != nil {
-			log.Printf("TUN read error: %v", err)
+			log.Printf("TAP read error: %v", err)
 			continue
 		}
 
-		ipPacket := buf[:n]
-		fmt.Printf("TUN'dan IP paketi alındı: %d bytes\n", len(ipPacket))
+		packet := buf[:n]
+		fmt.Printf("TAP'dan paket alındı: %d bytes\n", len(packet))
 
-		// IP paketini şifrele
+		// Paketi şifrele
 		currentKey := keyManager.Get()
-		nonce, ciphertext, err := crypto.Encrypt(currentKey, ipPacket)
+		nonce, ciphertext, err := crypto.Encrypt(currentKey, packet)
 		if err != nil {
 			log.Printf("Encrypt error: %v", err)
 			continue
@@ -202,8 +211,7 @@ func tunToUDP(tunIface *water.Interface, conn *net.UDPConn, clientAddr *net.UDPA
 	}
 }
 
-// UDP'den TUN'a veri akışı
-func udpToTUN(conn *net.UDPConn, tunIface *water.Interface, clientAddr *net.UDPAddr, keyManager *SharedKeyManager) {
+func udpToTAP(conn *net.UDPConn, tapFile *os.File, clientAddr *net.UDPAddr, keyManager *SharedKeyManager) {
 	buf := make([]byte, 1500)
 	for {
 		n, addr, err := conn.ReadFromUDP(buf)
@@ -212,7 +220,6 @@ func udpToTUN(conn *net.UDPConn, tunIface *water.Interface, clientAddr *net.UDPA
 			continue
 		}
 
-		// Sadece bilinen client'tan gelen paketleri işle
 		if addr.String() != clientAddr.String() {
 			continue
 		}
@@ -224,36 +231,33 @@ func udpToTUN(conn *net.UDPConn, tunIface *water.Interface, clientAddr *net.UDPA
 			continue
 		}
 
-		// Sadece IP data paketlerini işle
 		if pkt.Type != 2 {
 			continue
 		}
 
 		// Decrypt
 		currentKey := keyManager.Get()
-		ipPacket, err := crypto.Decrypt(currentKey, pkt.Nonce, pkt.Payload)
+		packet, err := crypto.Decrypt(currentKey, pkt.Nonce, pkt.Payload)
 		if err != nil {
 			log.Printf("Decrypt error: %v", err)
 			continue
 		}
 
-		fmt.Printf("UDP'den IP paketi alındı: %d bytes\n", len(ipPacket))
+		fmt.Printf("UDP'den paket alındı: %d bytes\n", len(packet))
 
-		// TUN'a yaz
-		_, err = tunIface.Write(ipPacket)
+		// TAP'a yaz
+		_, err = tapFile.Write(packet)
 		if err != nil {
-			log.Printf("TUN write error: %v", err)
+			log.Printf("TAP write error: %v", err)
 		}
 	}
 }
 
-// Keepalive mekanizması
 func keepalive(conn *net.UDPConn, clientAddr *net.UDPAddr, keyManager *SharedKeyManager) {
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		// Boş heartbeat paketi oluştur
 		currentKey := keyManager.Get()
 		nonce, ciphertext, err := crypto.Encrypt(currentKey, []byte("heartbeat"))
 		if err != nil {
@@ -262,7 +266,7 @@ func keepalive(conn *net.UDPConn, clientAddr *net.UDPAddr, keyManager *SharedKey
 		}
 
 		pkt := protocol.Packet{
-			Type:    3, // Heartbeat packet
+			Type:    3,
 			KeyID:   0,
 			Nonce:   nonce,
 			Payload: ciphertext,
@@ -280,62 +284,5 @@ func keepalive(conn *net.UDPConn, clientAddr *net.UDPAddr, keyManager *SharedKey
 		} else {
 			fmt.Println("Server keepalive gönderildi")
 		}
-	}
-}
-
-// Anahtar yenileme mekanizması
-func keyRotation(conn *net.UDPConn, clientAddr *net.UDPAddr, ourPriv, clientPub []byte, keyManager *SharedKeyManager) {
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		fmt.Println("Anahtar yenileme başlıyor...")
-
-		// Yeni key pair oluştur
-		newPub, newPriv, err := crypto.GenerateKeyPair()
-		if err != nil {
-			log.Printf("Key rotation: New key generation failed: %v", err)
-			continue
-		}
-
-		// Yeni shared key türet (şimdilik aynı client public key kullanıyoruz)
-		// Gerçek implementasyonda yeni handshake gerekir
-		newSharedKey, err := crypto.DeriveSharedKey(newPriv, clientPub)
-		if err != nil {
-			log.Printf("Key rotation: New shared key derivation failed: %v", err)
-			continue
-		}
-
-		// Anahtar değişim paketini şifrele
-		currentKey := keyManager.Get()
-		nonce, ciphertext, err := crypto.Encrypt(currentKey, newPub)
-		if err != nil {
-			log.Printf("Key rotation: Encrypt new key failed: %v", err)
-			continue
-		}
-
-		// Key rotation paketini gönder
-		pkt := protocol.Packet{
-			Type:    4, // Key rotation packet
-			KeyID:   1, // Yeni key ID
-			Nonce:   nonce,
-			Payload: ciphertext,
-		}
-
-		data, err := protocol.Marshal(pkt)
-		if err != nil {
-			log.Printf("Key rotation: Marshal failed: %v", err)
-			continue
-		}
-
-		_, err = conn.WriteToUDP(data, clientAddr)
-		if err != nil {
-			log.Printf("Key rotation: Send failed: %v", err)
-			continue
-		}
-
-		// Yeni anahtarı aktif hale getir
-		keyManager.Set(newSharedKey)
-		fmt.Println("Anahtar yenileme tamamlandı")
 	}
 }

@@ -8,12 +8,8 @@ import (
 	"errors"
 )
 
-var (
-	key = []byte("0123456789ABCDEF0123456789ABCDEF") // 32 bayt
-)
-
-func Encrypt(plaintext []byte) ([]byte, []byte, error) {
-	block, err := aes.NewCipher(key)
+func Encrypt(sharedKey, plaintext []byte) ([]byte, []byte, error) {
+	block, err := aes.NewCipher(sharedKey)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -32,8 +28,8 @@ func Encrypt(plaintext []byte) ([]byte, []byte, error) {
 	return nonce, ciphertext, nil
 }
 
-func Decrypt(nonce, ciphertext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
+func Decrypt(sharedKey, nonce, ciphertext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(sharedKey)
 	if err != nil {
 		return nil, err
 	}

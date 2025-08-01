@@ -8,21 +8,9 @@ import (
 
 	"github.com/SAME1T/vpn-project/pkg/crypto"
 	"github.com/SAME1T/vpn-project/pkg/protocol"
-	"github.com/songgao/water"
 )
 
 func main() {
-	// TUN arayüzü oluştur
-	config := water.Config{
-		DeviceType: water.TAP,
-	}
-	tunIface, err := water.New(config)
-	if err != nil {
-		log.Fatalf("TUN interface creation failed: %v", err)
-	}
-	defer tunIface.Close()
-	fmt.Printf("TUN arayüzü oluşturuldu: %s\n", tunIface.Name())
-
 	serverAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:51820")
 	if err != nil {
 		log.Fatalf("ResolveUDPAddr failed: %v", err)
@@ -64,9 +52,7 @@ func main() {
 	}
 	fmt.Println("Handshake tamamlandı, şifreli iletişim başlıyor")
 
-	// TUN ve UDP arasında veri akışını başlat
-	go tunToUDP(tunIface, conn, sharedKey)
-	go udpToTUN(conn, tunIface, sharedKey)
+	// Keepalive başlat
 	go keepalive(conn, sharedKey)
 
 	// Test için "ping"i şifrele
@@ -113,87 +99,29 @@ func main() {
 	}
 	fmt.Println("Client aldı (decrypt):", string(pong))
 
-	// TUN goroutine'larının çalışması için bekle
-	select {}
-}
-
-// TUN'dan UDP'ye veri akışı
-func tunToUDP(tunIface *water.Interface, conn *net.UDPConn, sharedKey []byte) {
-	buf := make([]byte, 1500)
+	// Keepalive için sürekli dinle
+	fmt.Println("Keepalive testine geçiyoruz...")
 	for {
-		n, err := tunIface.Read(buf)
-		if err != nil {
-			log.Printf("TUN read error: %v", err)
-			continue
-		}
-
-		ipPacket := buf[:n]
-		fmt.Printf("Client TUN'dan IP paketi alındı: %d bytes\n", len(ipPacket))
-
-		// IP paketini şifrele
-		nonce, ciphertext, err := crypto.Encrypt(sharedKey, ipPacket)
-		if err != nil {
-			log.Printf("Encrypt error: %v", err)
-			continue
-		}
-
-		// Protocol paketine koy
-		pkt := protocol.Packet{
-			Type:    2, // IP data packet
-			KeyID:   0,
-			Nonce:   nonce,
-			Payload: ciphertext,
-		}
-
-		data, err := protocol.Marshal(pkt)
-		if err != nil {
-			log.Printf("Marshal error: %v", err)
-			continue
-		}
-
-		// UDP'ye gönder
-		_, err = conn.Write(data)
-		if err != nil {
-			log.Printf("UDP write error: %v", err)
-		}
-	}
-}
-
-// UDP'den TUN'a veri akışı
-func udpToTUN(conn *net.UDPConn, tunIface *water.Interface, sharedKey []byte) {
-	buf := make([]byte, 1500)
-	for {
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		n, err := conn.Read(buf)
 		if err != nil {
-			log.Printf("UDP read error: %v", err)
+			log.Printf("Read error: %v", err)
 			continue
 		}
 
-		// Protocol paketi parse et
 		pkt, err := protocol.Unmarshal(buf[:n])
 		if err != nil {
 			log.Printf("Unmarshal error: %v", err)
 			continue
 		}
 
-		// Sadece IP data paketlerini işle
-		if pkt.Type != 2 {
-			continue
-		}
-
-		// Decrypt
-		ipPacket, err := crypto.Decrypt(sharedKey, pkt.Nonce, pkt.Payload)
-		if err != nil {
-			log.Printf("Decrypt error: %v", err)
-			continue
-		}
-
-		fmt.Printf("Client UDP'den IP paketi alındı: %d bytes\n", len(ipPacket))
-
-		// TUN'a yaz
-		_, err = tunIface.Write(ipPacket)
-		if err != nil {
-			log.Printf("TUN write error: %v", err)
+		if pkt.Type == 3 { // Heartbeat
+			pt, err := crypto.Decrypt(sharedKey, pkt.Nonce, pkt.Payload)
+			if err != nil {
+				log.Printf("Heartbeat decrypt error: %v", err)
+				continue
+			}
+			fmt.Printf("Heartbeat alındı: %s\n", string(pt))
 		}
 	}
 }
