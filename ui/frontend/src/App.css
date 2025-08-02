@@ -1,0 +1,103 @@
+.App {
+  text-align: center;
+  max-width: 600px;
+  margin: 50px auto;
+  padding: 20px;
+  border-radius: 10px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  background-color: #f9f9f9;
+}
+
+.App-header {
+  margin-bottom: 30px;
+}
+
+.App-header h1 {
+  color: #333;
+  margin-bottom: 10px;
+}
+
+.status {
+  font-size: 18px;
+  margin: 20px 0;
+  padding: 10px;
+  border-radius: 5px;
+}
+
+.status.connected {
+  background-color: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+}
+
+.status.disconnected {
+  background-color: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+}
+
+.status.loading {
+  background-color: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffeaa7;
+}
+
+.buttons {
+  display: flex;
+  gap: 15px;
+  justify-content: center;
+  margin: 20px 0;
+}
+
+.btn {
+  padding: 12px 24px;
+  font-size: 16px;
+  font-weight: bold;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+  min-width: 150px;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-connect {
+  background-color: #28a745;
+  color: white;
+}
+
+.btn-connect:hover:not(:disabled) {
+  background-color: #218838;
+}
+
+.btn-disconnect {
+  background-color: #dc3545;
+  color: white;
+}
+
+.btn-disconnect:hover:not(:disabled) {
+  background-color: #c82333;
+}
+
+.message {
+  margin-top: 20px;
+  padding: 10px;
+  border-radius: 5px;
+  font-weight: bold;
+}
+
+.message.success {
+  background-color: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+}
+
+.message.error {
+  background-color: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+}
