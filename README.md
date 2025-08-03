@@ -3,7 +3,7 @@
 Bu proje, modern kriptografi teknikleri kullanarak sıfırdan geliştirilmiş tam fonksiyonel bir VPN (Virtual Private Network) uygulamasıdır.
 
 ## 👨‍💻 Geliştirici
-**Samet Çiftçi**  
+**Samet Çiftci**  
 📧 Email: scsametciftci@gmail.com  
 🔗 GitHub: [@SAME1T](https://github.com/SAME1T)
 

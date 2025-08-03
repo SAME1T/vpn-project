@@ -12,16 +12,27 @@ import (
 )
 
 func main() {
-	// TUN arayüzü oluştur
+	fmt.Println("VPN Client başlatılıyor...")
+
+	// TAP adapter oluşturmayı dene
+	var tunIface *water.Interface
 	config := water.Config{
 		DeviceType: water.TAP,
+		PlatformSpecificParams: water.PlatformSpecificParams{
+			ComponentID: "tap0901",
+			Network:     "OpenVPN TAP-Windows6",
+		},
 	}
+
 	tunIface, err := water.New(config)
 	if err != nil {
-		log.Fatalf("TUN interface creation failed: %v", err)
+		fmt.Printf("TAP adapter oluşturulamadı: %v\n", err)
+		fmt.Println("UDP echo modunda çalışacak...")
+		tunIface = nil
+	} else {
+		defer tunIface.Close()
+		fmt.Printf("TAP arayüzü oluşturuldu: %s\n", tunIface.Name())
 	}
-	defer tunIface.Close()
-	fmt.Printf("TUN arayüzü oluşturuldu: %s\n", tunIface.Name())
 
 	serverAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:51820")
 	if err != nil {
@@ -48,8 +59,7 @@ func main() {
 	fmt.Println("Client public key gönderildi")
 
 	// Server'dan public key'i al
-	buf := make([]byte, 1500)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 32)
 	n, err := conn.Read(buf)
 	if err != nil {
 		log.Fatalf("Server public key read failed: %v", err)
@@ -62,59 +72,87 @@ func main() {
 	if err != nil {
 		log.Fatalf("Shared key derivation failed: %v", err)
 	}
-	fmt.Println("Handshake tamamlandı, şifreli iletişim başlıyor")
+	fmt.Println("Shared key türetildi")
 
-	// TUN ve UDP arasında veri akışını başlat
-	go tunToUDP(tunIface, conn, sharedKey)
-	go udpToTUN(conn, tunIface, sharedKey)
-	go keepalive(conn, sharedKey)
+	// TAP adapter varsa gerçek ağ trafiği başlat
+	if tunIface != nil {
+		fmt.Println("Gerçek ağ trafiği başlatılıyor...")
+		go tunToUDP(tunIface, conn, sharedKey)
+		go udpToTUN(conn, tunIface, sharedKey)
+	} else {
+		// Test mesajı gönder
+		testMessage := []byte("Merhaba VPN Server!")
+		nonce, ciphertext, err := crypto.Encrypt(sharedKey, testMessage)
+		if err != nil {
+			log.Fatalf("Encrypt failed: %v", err)
+		}
 
-	// Test için "ping"i şifrele
-	nonce, ciphertext, err := crypto.Encrypt(sharedKey, []byte("ping"))
-	if err != nil {
-		log.Fatalf("Encrypt failed: %v", err)
+		pkt := protocol.Packet{
+			Nonce:   nonce,
+			Payload: ciphertext,
+		}
+
+		data, err := protocol.Marshal(pkt)
+		if err != nil {
+			log.Fatalf("Marshal failed: %v", err)
+		}
+
+		_, err = conn.Write(data)
+		if err != nil {
+			log.Fatalf("Send failed: %v", err)
+		}
+		fmt.Println("Test mesajı gönderildi")
+
+		// Echo cevabını al
+		responseBuf := make([]byte, 1500)
+		n, err = conn.Read(responseBuf)
+		if err != nil {
+			log.Fatalf("Response read failed: %v", err)
+		}
+
+		responsePkt, err := protocol.Unmarshal(responseBuf[:n])
+		if err != nil {
+			log.Fatalf("Response unmarshal failed: %v", err)
+		}
+
+		decrypted, err := crypto.Decrypt(sharedKey, responsePkt.Nonce, responsePkt.Payload)
+		if err != nil {
+			log.Fatalf("Response decrypt failed: %v", err)
+		}
+
+		fmt.Printf("Server'dan echo cevabı: %s\n", string(decrypted))
+		fmt.Println("VPN bağlantısı başarılı!")
 	}
 
-	// Protocol paketine koy
-	pingPkt := protocol.Packet{
-		Type:    1, // Data packet
-		KeyID:   0,
-		Nonce:   nonce,
-		Payload: ciphertext,
-	}
+	// Keepalive döngüsü
+	for {
+		time.Sleep(30 * time.Second)
+		fmt.Println("Keepalive gönderiliyor...")
 
-	pingData, err := protocol.Marshal(pingPkt)
-	if err != nil {
-		log.Fatalf("Marshal failed: %v", err)
-	}
+		keepaliveMsg := []byte("keepalive")
+		nonce, ciphertext, err := crypto.Encrypt(sharedKey, keepaliveMsg)
+		if err != nil {
+			log.Printf("Keepalive encrypt failed: %v", err)
+			continue
+		}
 
-	_, err = conn.Write(pingData)
-	if err != nil {
-		log.Fatalf("Write failed: %v", err)
-	}
-	fmt.Println("Client gönderdi (encrypt): ping")
+		pkt := protocol.Packet{
+			Nonce:   nonce,
+			Payload: ciphertext,
+		}
 
-	// Şifreli cevabı oku ve aç
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	n, err = conn.Read(buf)
-	if err != nil {
-		log.Fatalf("Read failed: %v", err)
-	}
+		data, err := protocol.Marshal(pkt)
+		if err != nil {
+			log.Printf("Keepalive marshal failed: %v", err)
+			continue
+		}
 
-	// Protocol paketi parse et
-	respPkt, err := protocol.Unmarshal(buf[:n])
-	if err != nil {
-		log.Fatalf("Unmarshal failed: %v", err)
+		_, err = conn.Write(data)
+		if err != nil {
+			log.Printf("Keepalive send failed: %v", err)
+			break
+		}
 	}
-
-	pong, err := crypto.Decrypt(sharedKey, respPkt.Nonce, respPkt.Payload)
-	if err != nil {
-		log.Fatalf("Decrypt failed: %v", err)
-	}
-	fmt.Println("Client aldı (decrypt):", string(pong))
-
-	// TUN goroutine'larının çalışması için bekle
-	select {}
 }
 
 // TUN'dan UDP'ye veri akışı
@@ -139,8 +177,6 @@ func tunToUDP(tunIface *water.Interface, conn *net.UDPConn, sharedKey []byte) {
 
 		// Protocol paketine koy
 		pkt := protocol.Packet{
-			Type:    2, // IP data packet
-			KeyID:   0,
 			Nonce:   nonce,
 			Payload: ciphertext,
 		}
@@ -176,11 +212,6 @@ func udpToTUN(conn *net.UDPConn, tunIface *water.Interface, sharedKey []byte) {
 			continue
 		}
 
-		// Sadece IP data paketlerini işle
-		if pkt.Type != 2 {
-			continue
-		}
-
 		// Decrypt
 		ipPacket, err := crypto.Decrypt(sharedKey, pkt.Nonce, pkt.Payload)
 		if err != nil {
@@ -194,41 +225,6 @@ func udpToTUN(conn *net.UDPConn, tunIface *water.Interface, sharedKey []byte) {
 		_, err = tunIface.Write(ipPacket)
 		if err != nil {
 			log.Printf("TUN write error: %v", err)
-		}
-	}
-}
-
-// Keepalive mekanizması
-func keepalive(conn *net.UDPConn, sharedKey []byte) {
-	ticker := time.NewTicker(25 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		// Boş heartbeat paketi oluştur
-		nonce, ciphertext, err := crypto.Encrypt(sharedKey, []byte("heartbeat"))
-		if err != nil {
-			log.Printf("Keepalive encrypt error: %v", err)
-			continue
-		}
-
-		pkt := protocol.Packet{
-			Type:    3, // Heartbeat packet
-			KeyID:   0,
-			Nonce:   nonce,
-			Payload: ciphertext,
-		}
-
-		data, err := protocol.Marshal(pkt)
-		if err != nil {
-			log.Printf("Keepalive marshal error: %v", err)
-			continue
-		}
-
-		_, err = conn.Write(data)
-		if err != nil {
-			log.Printf("Keepalive send error: %v", err)
-		} else {
-			fmt.Println("Client keepalive gönderildi")
 		}
 	}
 }
